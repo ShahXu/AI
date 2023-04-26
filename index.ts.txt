@@ -1,0 +1,329 @@
+import { StrictMode } from "react";
+import ReactDOM from "react-dom";
+import { initializeIcons } from "@fluentui/react";
+import { ITag } from "@fluentui/react/lib/Pickers";
+import addDays from "date-fns/addDays";
+import isEmpty from "lodash/isEmpty";
+
+import TimesheetDetails, {
+  ITimesheetDetailsProps
+} from "@mbap/ui/fluentui/v8/lib/Timesheet/TimesheetDetails";
+import TimesheetSummary, {
+  ITimesheetSummaryProps
+} from "@mbap/ui/fluentui/v8/lib/Timesheet/TimesheetSummary";
+import {
+  ITimesheetDetail,
+  sumHoursByDay
+} from "@mbap/ui/fluentui/v8/ts/timesheet";
+
+import { IInputs, IOutputs } from "./generated/ManifestTypes";
+
+export class Timesheet
+  implements ComponentFramework.StandardControl<IInputs, IOutputs>
+{
+  private container!: HTMLDivElement;
+
+  private summaryProps!: ITimesheetSummaryProps;
+
+  private detailsProps!: ITimesheetDetailsProps;
+
+  constructor() {
+    initializeIcons();
+  }
+
+  /**
+   * Used to initialize the control instance. Controls can kick off remote server calls and other initialization actions here.
+   * Data-set values are not initialized here, use updateView.
+   * @param context The entire property bag available to control via Context Object; It contains values as set up by the customizer mapped to property names defined in the manifest, as well as utility functions.
+   * @param notifyOutputChanged A callback method to alert the framework that the control has new outputs ready to be retrieved asynchronously.
+   * @param state A piece of data that persists in one session for a single user. Can be set at any point in a controls life cycle by calling 'setControlState' in the Mode interface.
+   * @param container If a control is marked control-type='standard', it will receive an empty div element within which it can render its content.
+   */
+  public init(
+    context: ComponentFramework.Context<IInputs>,
+    notifyOutputChanged: () => void,
+    state: ComponentFramework.Dictionary,
+    container: HTMLDivElement
+  ) {
+    const { parameters, webAPI, factory } = context,
+      { entityId } = parameters,
+      convert = (detail: ITimesheetDetail, isNew = false) => {
+        let converted = {
+          hcltech_linenumber: detail.lineNumber.toString().padStart(5, "0"),
+          hcltech_description: detail.description,
+          hcltech_monday: detail.monday,
+          hcltech_tuesday: detail.tuesday,
+          hcltech_wednesday: detail.wednesday,
+          hcltech_thursday: detail.thursday,
+          hcltech_friday: detail.friday,
+          hcltech_saturday: detail.saturday,
+          hcltech_sunday: detail.sunday
+        };
+
+        converted = {
+          ...converted,
+          // @ts-ignore
+          "hcltech_Project@odata.bind": detail.project
+            ? // @ts-ignore
+              `/hcltech_projects(${detail.project.id})`
+            : null
+            
+        };
+
+        converted = {
+          ...converted,
+          // @ts-ignore
+          "hcltech_ProjectTask@odata.bind": detail.task
+            ? // @ts-ignore
+              `/hcltech_projecttasks(${detail.task.id})`
+            : null
+        };
+
+        if (isNew) {
+          return {
+            ...converted,
+            "hcltech_TimeSheet@odata.bind": `/hcltech_timesheets(${entityId.raw})`
+          };
+        }
+
+        return { ...converted, hcltech_timesheetdetail: detail.id };
+      };
+
+    this.container = container;
+    // @ts-ignore
+    this.detailsProps = {
+      onRemove: async (deletedDetails: ITimesheetDetail[]) => {
+        await Promise.all(
+          deletedDetails
+            .filter((detail) => detail.id.length === 36)
+            .map((detail) =>
+              webAPI.deleteRecord("hcltech_timesheetdetail", detail.id)
+            )
+        );
+      },
+      onSave: async (details: ITimesheetDetail[]) => {
+        await Promise.all([
+          ...details
+            .filter((detail) => detail.id.length !== 36)
+            .map((detail) =>
+              webAPI.createRecord(
+                "hcltech_timesheetdetail",
+                convert(detail, true)
+              )
+            ),
+          ...details
+            .filter((detail) => detail.id.length === 36)
+            .map((detail) =>
+              webAPI.updateRecord(
+                "hcltech_timesheetdetail",
+                detail.id,
+                convert(detail)
+              )
+            )
+        ]);
+
+        factory.requestRender();
+      },
+      onProjectResolveSuggestions: async (filter): Promise<ITag[]> => {
+        const results = (
+          await webAPI.retrieveMultipleRecords(
+            "hcltech_project",
+            `?fetchXml=<fetch top="10" distinct="true" no-lock="true"><entity name="hcltech_project">
+              <attribute name="hcltech_projectid" />
+              <attribute name="hcltech_project" />
+              <attribute name="hcltech_description" />
+              <filter type="and">
+                <condition attribute="statecode" operator="eq" value="0" />
+                <filter type="or">
+                  <condition attribute="hcltech_project" operator="like" value="%${filter.toLowerCase()}%" />
+                  <condition attribute="hcltech_description" operator="like" value="%${filter.toLowerCase()}%" />
+                </filter>
+              </filter>
+            </entity></fetch>`
+          )
+        ).entities;
+
+        return results.map((result) => ({
+          key: result.hcltech_projectid,
+          name: `${result.hcltech_project} - ${result.hcltech_description}`
+        }));
+      },
+      onTaskResolveSuggestions: async (filter, projectId): Promise<ITag[]> => {
+        const results = (
+          await webAPI.retrieveMultipleRecords(
+            "hcltech_projecttask",
+            `?fetchXml=<fetch top="10" no-lock="true"><entity name="hcltech_projecttask">
+              <attribute name="hcltech_projecttaskid" />
+              <attribute name="hcltech_projecttask" />
+              <attribute name="hcltech_description" />
+              <filter type="and">
+                <condition attribute="hcltech_projectid" operator="eq" value="${projectId}" />
+                <condition attribute="statecode" operator="eq" value="0" />
+                <filter type="or">
+                  <condition attribute="hcltech_projecttask" operator="like" value="%${filter.toLocaleLowerCase()}%" />
+                  <condition attribute="hcltech_description" operator="like" value="%${filter.toLocaleLowerCase()}%" />
+                </filter>
+              </filter>
+            </entity></fetch>`
+          )
+        ).entities;
+
+        return results.map((result) => ({
+          key: result.hcltech_projecttaskid,
+          name: `${result.hcltech_projecttask} - ${result.hcltech_description}`
+        }));
+      }
+    };
+  }
+
+  /**
+   * Called when any value in the property bag has changed. This includes field values, data-sets, global values such as container height and width, offline status, control metadata values such as label, visible, etc.
+   * @param context The entire property bag available to control via Context Object; It contains values as set up by the customizer mapped to names defined in the manifest, as well as utility functions
+   */
+  public async updateView(
+    context: ComponentFramework.Context<IInputs>
+  ): Promise<void> {
+    const { mode, parameters, webAPI } = context,
+      { isControlDisabled, isVisible } = mode,
+      { entityId } = parameters,
+      results = await Promise.all([
+        webAPI.retrieveRecord(
+          "hcltech_timesheet",
+          entityId?.raw as string,
+          "?$select=hcltech_timesheetid&$expand=hcltech_TimeSheetPeriod($select=hcltech_periodstart)"
+        ),
+        webAPI.retrieveMultipleRecords(
+          "hcltech_timesheetdetail",
+          `?fetchXml=<fetch no-lock="true"><entity name="hcltech_timesheetdetail">
+            <attribute name="hcltech_timesheetdetailid" />
+            <attribute name="hcltech_linenumber" />
+            <attribute name="hcltech_description" />
+            <attribute name="hcltech_monday" />
+            <attribute name="hcltech_tuesday" />
+            <attribute name="hcltech_wednesday" />
+            <attribute name="hcltech_thursday" />
+            <attribute name="hcltech_friday" />
+            <attribute name="hcltech_saturday" />
+            <attribute name="hcltech_sunday" />
+            <filter>
+              <condition attribute="hcltech_timesheet" operator="eq" value="${entityId.raw}" />
+            </filter>
+            <order attribute="hcltech_linenumber" />
+            <link-entity name="hcltech_project" from="hcltech_projectid" to="hcltech_project" link-type="outer" alias="project">
+              <attribute name="hcltech_projectid" />
+              <attribute name="hcltech_project" />
+              <attribute name="hcltech_description" />
+            </link-entity>
+            <link-entity name="hcltech_projecttask" from="hcltech_projecttaskid" to="hcltech_projecttask" link-type="outer" alias="task">
+              <attribute name="hcltech_projecttaskid" />
+              <attribute name="hcltech_projectid" />
+              <attribute name="hcltech_description" />
+            </link-entity>
+          </entity></fetch>`
+        )
+      ]),
+      timesheet = results[0],
+      timesheetDetails = results[1].entities,
+      startDate = new Date(
+        timesheet?.hcltech_TimeSheetPeriod?.hcltech_periodstart
+      );
+
+    if (!timesheetDetails.length) {
+      timesheetDetails.push({
+        hcltech_timesheetdetail: "",
+        hcltech_linenumber: 0,
+        hcltech_description: "",
+        hcltech_monday: 0,
+        hcltech_tuesday: 0,
+        hcltech_wednesday: 0,
+        hcltech_thursday: 0,
+        hcltech_friday: 0,
+        hcltech_saturday: 0,
+        hcltech_sunday: 0
+      });
+    }
+
+    this.summaryProps = {
+      startDate,
+      endDate: addDays(startDate, 6),
+      ...sumHoursByDay(
+        timesheetDetails.map(
+          (detail) =>
+            ({
+              monday: detail.hcltech_monday || 0,
+              tuesday: detail.hcltech_tuesday || 0,
+              wednesday: detail.hcltech_wednesday || 0,
+              thursday: detail.hcltech_thursday || 0,
+              friday: detail.hcltech_friday || 0,
+              saturday: detail.hcltech_saturday || 0,
+              sunday: detail.hcltech_sunday || 0
+            } as ITimesheetDetail)
+        )
+      ),
+      visible: isVisible
+    };
+    this.detailsProps = {
+      ...this.detailsProps,
+      items: timesheetDetails.map((detail) => {
+        const project = Object.assign(
+            {},
+            ...Object.keys(detail)
+              .filter((k) => k.startsWith("project."))
+              .map((k) => ({ [k.replace("project.", "")]: detail[k] }))
+          ),
+          task = Object.assign(
+            {},
+            ...Object.keys(detail)
+              .filter((k) => k.startsWith("task."))
+              .map((k) => ({ [k.replace("task.", "")]: detail[k] }))
+          );
+
+        return {
+          id: detail.hcltech_timesheetdetailid,
+          lineNumber: Number(detail.hcltech_linenumber) || 0,
+          description: detail.hcltech_description,
+          monday: detail.hcltech_monday || 0,
+          tuesday: detail.hcltech_tuesday || 0,
+          wednesday: detail.hcltech_wednesday || 0,
+          thursday: detail.hcltech_thursday || 0,
+          friday: detail.hcltech_friday || 0,
+          saturday: detail.hcltech_saturday || 0,
+          sunday: detail.hcltech_sunday || 0,
+          project: isEmpty(project)
+            ? null
+            : {
+                id: project.hcltech_projectid,
+                name: `${project.hcltech_project} - ${project.hcltech_description}`
+              },
+          task: isEmpty(task)
+            ? null
+            : {
+                id: task.hcltech_projecttaskid,
+                name: `${task.hcltech_projecttask} - ${task.hcltech_description}`
+              }
+        } as ITimesheetDetail;
+      }),
+      startDate,
+      disabled: isControlDisabled,
+      visible: isVisible
+    };
+
+    ReactDOM.render(
+      React.createElement(
+        StrictMode,
+        null,
+        React.createElement(TimesheetDetails, this.detailsProps)
+      ),
+      this.container
+    );
+  }
+  /*
+  public getOutputs(): IOutputs {
+    return {};
+  }
+*/
+
+  public destroy(): void {
+    ReactDOM.unmountComponentAtNode(this.container);
+  }
+}
