@@ -100,8 +100,11 @@ nav button.on{color:var(--text)}
 .modal.open{display:flex}
 .sheet{background:var(--bg);width:100%;max-width:520px;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom));max-height:85vh;overflow-y:auto;animation:slideup .25s ease}
 @keyframes slideup{from{transform:translateY(40px);opacity:0}to{transform:none;opacity:1}}
-.toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:12px 18px;border-radius:14px;font-size:13px;font-weight:500;z-index:200;display:flex;gap:14px;align-items:center;box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .2s ease;max-width:90%}
+.toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:13px 20px;border-radius:14px;font-size:13.5px;font-weight:500;z-index:200;display:flex;gap:14px;align-items:center;box-shadow:0 6px 20px rgba(0,0,0,.3);animation:toastin .25s ease;max-width:90%}
+.toast.ok{background:var(--success);color:#fff}
+.toast .tick{font-weight:700}
 .toast button{background:none;border:none;color:inherit;font-weight:700;cursor:pointer;text-decoration:underline}
+@keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
 .empty{text-align:center;padding:36px 20px;color:var(--text2)}
 .empty .big{font-size:36px;margin-bottom:10px}
 .mrow{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}
@@ -173,8 +176,8 @@ canvas{width:100%;height:auto}
   </div>
   <div class="field"><label>Notes (optional)</label><textarea id="f-notes" rows="2"></textarea></div>
   <div style="display:flex;gap:10px;margin-top:6px">
-    <button class="btn primary" onclick="App.save(false)">Save</button>
-    <button class="btn ghost" onclick="App.save(true)">Save + add another</button>
+    <button class="btn primary" id="f-save" onclick="App.save(false)">Save</button>
+    <button class="btn ghost" id="f-save-again" onclick="App.save(true)">Save + add another</button>
   </div>
   <button class="btn danger" id="f-cancel" style="margin-top:10px;display:none" onclick="App.cancelEdit()">Cancel edit</button>
 </div>
@@ -355,7 +358,7 @@ const App = {
     this.renderAll();
   },
 
-  persist(){ Store.save(this.d); },
+  persist(){ return Store.save(this.d); },
   renderAll(){ this.renderHome(); this.renderReports(); this.renderSettings(); },
 
   /* ---------- navigation ---------- */
@@ -451,11 +454,14 @@ const App = {
   },
 
   quickAdd(pid) {
+    if(this.isSaving) return;
     const p=this.d.presets.find(x=>x.id===pid); if(!p) return;
+    this.isSaving=true;
     this.d.txns.push({ id:uid(), type:"expense", amount:p.amount, cur:p.cur, cat:p.cat,
       acc:p.acc, method:this.d.settings.lastMethod, desc:p.label, date:todayStr(),
       tags:[], notes:"", created:Date.now(), modified:Date.now() });
-    if(this.persist()){ this.toast(`${p.label} added — ${fmt(p.amount,p.cur)} ${p.cur}`); this.renderAll(); }
+    if(this.persist()){ this.toast(`✓ ${p.label} added — ${fmt(p.amount,p.cur)} ${p.cur}`,false,true); this.renderAll(); }
+    setTimeout(()=>{ this.isSaving=false; },600);
   },
 
   /* ---------- ADD FORM ---------- */
@@ -487,10 +493,13 @@ const App = {
     this.setType("expense"); this.setCur("SAR"); this.refreshFormSelects();
   },
   save(again) {
+    if(this.isSaving) return;
     const amount=parseFloat($("f-amount").value);
     if(!amount||amount<=0){ this.toast("Enter a valid amount"); return; }
     const acc=$("f-account").value;
     if(!acc){ this.toast("Add a bank account for "+this.fCur+" in Settings first"); return; }
+    this.isSaving=true;
+    $("f-save").disabled=true; $("f-save-again").disabled=true;
     const tags=$("f-tags").value.split(/[\s,]+/).filter(x=>x).map(x=>x.startsWith("#")?x:"#"+x);
     const base={ type:this.fType, amount, cur:this.fCur, acc, cat:$("f-category").value,
       method:$("f-method").value, desc:$("f-desc").value.trim(), date:$("f-date").value||todayStr(),
@@ -504,11 +513,15 @@ const App = {
     }
     this.d.settings.lastAcc[this.fCur]=acc;
     this.d.settings.lastMethod=base.method;
-    if(!this.persist()) return;
-    this.toast("Saved — "+fmt(amount,base.cur)+" "+base.cur);
+    if(!this.persist()){ this.isSaving=false; $("f-save").disabled=false; $("f-save-again").disabled=false; return; }
+    this.toast("✓ Saved — "+fmt(amount,base.cur)+" "+base.cur,false,true);
     this.renderAll();
-    if(again){ $("f-amount").value=""; $("f-desc").value=""; $("f-notes").value=""; $("f-amount").focus(); }
-    else this.go("home");
+    if(again){
+      $("f-amount").value=""; $("f-desc").value=""; $("f-notes").value=""; $("f-amount").focus();
+      this.isSaving=false; $("f-save").disabled=false; $("f-save-again").disabled=false;
+    } else {
+      setTimeout(()=>{ this.isSaving=false; $("f-save").disabled=false; $("f-save-again").disabled=false; this.go("home"); }, 550);
+    }
   },
   cancelEdit(){ this.editId=null; this.resetForm(); this.go("home"); },
 
@@ -800,13 +813,13 @@ const App = {
   },
 
   /* ---------- toast ---------- */
-  toast(msg,withUndo) {
+  toast(msg,withUndo,ok) {
     this.hideToast();
     const t=document.createElement("div");
-    t.className="toast"; t.id="toast";
+    t.className="toast"+(ok?" ok":""); t.id="toast";
     t.innerHTML=msg+(withUndo?` <button onclick="App.undo()">Undo</button>`:"");
     document.body.appendChild(t);
-    this.undoTimer=setTimeout(()=>this.hideToast(),withUndo?5000:2200);
+    this.undoTimer=setTimeout(()=>this.hideToast(),withUndo?5000:2600);
   },
   hideToast(){ const t=$("toast"); if(t)t.remove(); clearTimeout(this.undoTimer); }
 };
